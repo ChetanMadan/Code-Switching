@@ -3,3 +3,4 @@
 Data/
 *.yaml
 deepspeech.pytorch/
+train_logs/
