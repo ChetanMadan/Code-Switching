@@ -14,34 +14,9 @@ class TextTransform:
     """Maps characters to integers and vice versa"""
     def __init__(self):
         char_map_str = """
-        ' 0
-        <SPACE> 1
-        a 2
-        b 3
-        c 4
-        d 5
-        e 6
-        f 7
-        g 8
-        h 9
-        i 10
-        j 11
-        k 12
-        l 13
-        m 14
-        n 15
-        o 16
-        p 17
-        q 18
-        r 19
-        s 20
-        t 21
-        u 22
-        v 23
-        w 24
-        x 25
-        y 26
-        z 27
+        s 0
+        e 1
+        t 2
         """
         self.char_map = {}
         self.index_map = {}
@@ -85,7 +60,7 @@ class CodeSwitchDataset(Dataset):
         if self.mode == "train":
             self.path = 'Data/PartA_{}/Train/'.format(self.lang)
         elif self.mode == "test":
-            self.path = self.path = 'Data/PartA_{}/Dev/'.format(self.lang)
+            self.path = self.path = 'Data/PartB_{}/Dev/'.format(self.lang)
         else:
             raise Exception("Incorrect mode")
         self.file_list = os.listdir(os.path.join(self.path, 'Audio'))
