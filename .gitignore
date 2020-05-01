@@ -5,3 +5,5 @@ Data/
 deepspeech.pytorch/
 train_logs/
 checkpoints/
+checkpoints (copy)/
+
