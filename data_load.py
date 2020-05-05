@@ -24,7 +24,7 @@ class TextTransform:
             ch, index = line.split()
             self.char_map[ch] = int(index)
             self.index_map[int(index)] = ch
-        self.index_map[1] = ' '
+        self.index_map[1] = 's'
 
     def text_to_int(self, text):
         """ Use a character map and convert text to an integer sequence """
@@ -58,14 +58,14 @@ class CodeSwitchDataset(Dataset):
         else:
             raise Exception("Check Language")
         if self.mode == "train":
-            self.path = 'Data/PartA_{}/Train/'.format(self.lang)
+            self.path = 'Data/PartB_{}/Train/'.format(self.lang)
         elif self.mode == "test":
             self.path = self.path = 'Data/PartB_{}/Dev/'.format(self.lang)
         else:
             raise Exception("Incorrect mode")
         self.file_list = os.listdir(os.path.join(self.path, 'Audio'))
         self.shuffle=shuffle
-        self.csv_file = pd.read_csv(self.path + 'Transcription_LT_Sequence.tsv', header=None, sep='\t')
+        self.csv_file = pd.read_csv(self.path + 'Transcription_LT_Sequence_Frame_Level_200_actual.tsv', header=None, sep='\t')
         self.input_length = []
         self.label_length = []
 
