@@ -16,10 +16,8 @@ import torch.nn as nn
 class Model(nn.Module):
 
     def __init__(self):
-        super(Mode;, self).__init__()
+        super(Model, self).__init__()
         l1 = nn.LSTM(1024)
-
-
 
 
         def __init__(self):
