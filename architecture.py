@@ -34,15 +34,15 @@ class Network(nn.Module):
         self.pool = nn.MaxPool2d(kernel_size=(2, 2))
         self.hidden = nn.Linear(512, 128)
         self.drop = nn.Dropout(0.5)
-        self.out1 = nn.Linear(128, 64)
-        self.out2 = nn.Linear(128, n_out_classes)
+        self.out1 = nn.Linear(7680, 512)
+        self.out2 = nn.Linear(512, n_out_classes)
         self.act = nn.ReLU()
         self.avg_pool = nn.AdaptiveAvgPool2d((None, 512))
         self.num_layers = 2
         self.batch_size = 4
-        self.hidden_size = 128
-        self.bgru1 = nn.GRU(input_size=64,
-                            hidden_size=128,
+        self.hidden_size = 256
+        self.bgru1 = nn.GRU(input_size=512,
+                            hidden_size=256,
                             num_layers=2,
                            batch_first=True)
 
@@ -66,22 +66,26 @@ class Network(nn.Module):
 
         #x = self.hidden(x)  # [batch_size, 128]
         print("After reshape: ", x.shape)
+        
+        x = self.out1(x)
+        print("out1: ", x.shape)
         # x = self.out1(x) # [batch_size, 64]
         x = nn.utils.rnn.pack_padded_sequence(x,
                                               x_lengths,
                                               enforce_sorted=False)
-        
+        print(x_lengths)
+        print("After packing: ", len(x))
         x, h0 = self.bgru1(x, h0)
-        print(x.shape)
+        
         x, _ = nn.utils.rnn.pad_packed_sequence(x,
                                                 batch_first=True)
         x = x.contiguous()
         x = x.view(-1, x.shape[2])
+        print(x.shape)
         
         x = self.out2(x)  # [batch_size, 2]
         x = F.log_softmax(x, dim=1)
         x = x.view(batch_size, T, n_out_classes)
-
         
         #x = self.bgru2(x)
         #print(x.shape)
@@ -89,7 +93,6 @@ class Network(nn.Module):
         
         print(x.shape)
         return x
-
 
 
 
