@@ -22,20 +22,21 @@ class Model(nn.Module):
         return out, hidden
 
 
+
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
-        n_out_classes = 4
-        self.conv = nn.Conv2d(1, 32, kernel_size=3)
-        self.conv1 = nn.Conv2d(32, 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3)
+        self.n_out_classes = 3
+        self.conv = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(32, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         #self.conv4 = nn.Conv2d(64, 128, kernel_size=3)
         self.pool = nn.MaxPool2d(kernel_size=(2, 2))
         self.hidden = nn.Linear(512, 128)
         self.drop = nn.Dropout(0.5)
-        self.out1 = nn.Linear(7680, 512)
-        self.out2 = nn.Linear(512, n_out_classes)
+        self.out1 = nn.Linear(8192, 512)
+        self.out2 = nn.Linear(256, self.n_out_classes)
         self.act = nn.ReLU()
         self.avg_pool = nn.AdaptiveAvgPool2d((None, 512))
         self.num_layers = 2
@@ -47,9 +48,12 @@ class Network(nn.Module):
                            batch_first=True)
 
     def forward(self, x, x_lengths):
+        print("batch_size, seq_len, _ = ", x.size())
+        seq_len = x.size()[-1]
         h0 = torch.rand(self.num_layers, self.batch_size, self.hidden_size).to(device)
         print("Initial: ", x.shape)
-        x = self.act(self.conv(x))  # [batch_size, 4, 30, 30]
+        # [batch_size, channels, height, width]
+        x = self.act(self.conv(x))  # [batch_size, 4, feats, seq_len]
         print("conv: ", x.shape)
         x = self.act(self.conv1(x))  # [batch_size, 8, 28, 28]
         print("conv1: ", x.shape)
@@ -61,31 +65,37 @@ class Network(nn.Module):
         #print("avg_pool: ", x.shape)
         #x = self.drop(x)
         x = x.permute(0,3,1,2)
+        # [batch_size, width, channels, height]
         T = x.size(1)
+        print("T, seq_len: ", T, seq_len)
         x = x.view(self.batch_size, T, -1)
-
+        # [batch_size, width (time steps or length), channels * height]
         #x = self.hidden(x)  # [batch_size, 128]
-        print("After reshape: ", x.shape)
+        print("After reshape before packing: ", x.shape) # [batch_size, length, features]
         
         x = self.out1(x)
-        print("out1: ", x.shape)
+        print("out1: ", x.shape) # ([4, 632, 512])
         # x = self.out1(x) # [batch_size, 64]
         x = nn.utils.rnn.pack_padded_sequence(x,
                                               x_lengths,
-                                              enforce_sorted=False)
+                                              enforce_sorted=False,
+                                              batch_first=True)
         print(x_lengths)
-        print("After packing: ", len(x))
+        print("After packing: ", len(x), x[0].shape)
         x, h0 = self.bgru1(x, h0)
         
         x, _ = nn.utils.rnn.pad_packed_sequence(x,
                                                 batch_first=True)
-        x = x.contiguous()
+        x = x.contiguous() 
+        print("contiguous: ", x.shape) # ([4, 39, 256])
         x = x.view(-1, x.shape[2])
-        print(x.shape)
+        print("after reshape: ", x.shape)
         
         x = self.out2(x)  # [batch_size, 2]
+        print("final out2: ", x.shape)
         x = F.log_softmax(x, dim=1)
-        x = x.view(batch_size, T, n_out_classes)
+        print("After log_softmax: ", x.shape)
+        x = x.view(self.batch_size, seq_len, self.n_out_classes)
         
         #x = self.bgru2(x)
         #print(x.shape)
@@ -93,7 +103,6 @@ class Network(nn.Module):
         
         print(x.shape)
         return x
-
 
 
 
