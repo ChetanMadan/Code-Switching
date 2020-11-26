@@ -24,7 +24,6 @@ class TextTransform:
             ch, index = line.split()
             self.char_map[ch] = int(index)
             self.index_map[int(index)] = ch
-        self.index_map[1] = 's'
 
     def text_to_int(self, text):
         """ Use a character map and convert text to an integer sequence """
@@ -100,10 +99,6 @@ class CodeSwitchDataset(Dataset):
         file_name = self.csv_file[0][idx]
         trans = self.csv_file[1][idx]
         wav, sr = librosa.load(glob(self.path + 'Audio/*'+ str(file_name) + '.wav')[0])
-        #wav, trans  = self.pad(wav, trans, self.max_len)
-
-        #out, trans = self.preprocess(wav, sr, trans)
-
 
         if len(set(trans)) > 2:
             label = 1

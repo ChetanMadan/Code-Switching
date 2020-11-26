@@ -27,9 +27,11 @@ from torch.utils.data.sampler import SubsetRandomSampler
 import torch
 import torch.nn as nn
 from librosa.core import stft, magphase
-from torch import autograd
+from torch.autograd import Variable
 from data_load import CodeSwitchDataset, TextTransform
 
+
+BATCH_SIZE = 2
 
 def pad(wav, trans, lang):
     """
@@ -50,35 +52,6 @@ def pad(wav, trans, lang):
         ratio = int(len(trans)*diff/len(wav))
         trans +=trans[:ratio]
     return wav, trans
-
-
-def preprocess(data):
-    """
-    Never used, can be deleted (don't delete though)
-    """
-    inputs = []
-    labels = []
-    input_lengths = []
-    label_lengths = []
-    
-    for (wav, sr, trans, lang) in data:
-        # wav, trans  = pad(wav, trans, lang)
-        out = stft(wav, win_length=int(sr*0.02), hop_length=int(sr*0.01))
-        out = np.transpose(out, axes=(1, 0))
-
-        text_transform = TextTransform()
-        trans = torch.Tensor(text_transform.text_to_int(trans.lower()))
-
-        out = magphase(out)[0]
-        out = torch.from_numpy(np.array([np.log(1 + x) for x in out]))
-        inputs.append(out)
-        labels.append(trans)
-        input_lengths.append(out.shape[0])
-        label_lengths.append(len(trans))
-    inputs = nn.utils.rnn.pad_sequence(inputs, batch_first=True)
-    labels = nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=0)
-    # spectrograms = nn.utils.rnn.pad_sequence(spectrograms, batch_first=True).unsqueeze(1).transpose(2, 3)
-    return inputs, labels, input_lengths, label_lengths
 
 
 def preprocess_crnn(data, mode='train'):
@@ -149,14 +122,14 @@ train_sampler = SubsetRandomSampler(train_indices)
 valid_sampler = SubsetRandomSampler(val_indices)
 
 train_loader = DataLoader(train_dataset,
-                          batch_size=4,
+                          batch_size=BATCH_SIZE,
                           drop_last=True,
                           num_workers = 6,
                           sampler = train_sampler,
                           collate_fn = lambda x: preprocess_crnn(x, 'train'))
 
 test_loader = DataLoader(train_dataset,
-                          batch_size=4,
+                          batch_size=BATCH_SIZE,
                           drop_last=True,
                           num_workers=6,
                           sampler=valid_sampler,
@@ -187,27 +160,113 @@ class Model(nn.Module):
         return out, hidden
 """
 
+class CRNN(nn.Module):
+
+    def __init__(self):
+        super(CRNN, self).__init__()
+
+        self.num_classes = 3 + 1
+        self.image_H = 128
+
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=(3,3))
+        self.in1 = nn.InstanceNorm2d(32)
+
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=(3,3))
+        self.in2 = nn.InstanceNorm2d(32)
+
+        self.conv3 = nn.Conv2d(32, 32, kernel_size=(3,3), stride=2)
+        self.in3 = nn.InstanceNorm2d(32)
+
+        self.conv4 = nn.Conv2d(32, 64, kernel_size=(3,3))
+        self.in4 = nn.InstanceNorm2d(64)
+
+        self.conv5 = nn.Conv2d(64, 64, kernel_size=(3,3))
+        self.in5 = nn.InstanceNorm2d(64)
+
+        self.conv6 = nn.Conv2d(64, 64, kernel_size=(3,3), stride=2)
+        self.in6 = nn.InstanceNorm2d(64)
+
+        self.postconv_height = 3
+        self.postconv_width = 31
+
+        self.gru_input_size = self.postconv_height * 64
+        self.gru_hidden_size = 128
+        self.gru_num_layers = 2
+        self.gru_h = Variable(torch.zeros(4,64, self.gru_hidden_size)).to('cuda')
+
+        self.gru = nn.GRU(self.gru_input_size,
+                          self.gru_hidden_size,
+                          self.gru_num_layers,
+                          batch_first = True,
+                          bidirectional = True).to('cuda')
+
+        self.fc = nn.Linear(self.gru_hidden_size * 2, self.num_classes)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+
+        out = self.conv1(x)
+        out = F.leaky_relu(out)
+        out = self.in1(out)
+
+        out = self.conv2(out)
+        out = F.leaky_relu(out)
+        out = self.in2(out)
+
+        out = self.conv3(out)
+        out = F.leaky_relu(out)
+        out = self.in3(out)
+
+        out = self.conv4(out)
+        out = F.leaky_relu(out)
+        out = self.in4(out)
+
+        out = self.conv5(out)
+        out = F.leaky_relu(out)
+        out = self.in5(out)
+
+        out = self.conv6(out)
+        out = F.leaky_relu(out)
+        out = self.in6(out)
+
+        out = out.permute(0, 3, 2, 1)
+        out = out.reshape(batch_size, -1, self.gru_input_size)
+        out, gru_h = self.gru(out, self.gru_h.cuda())
+        self.gru_h = gru_h.detach()
+
+        out = torch.stack([F.log_softmax(self.fc(out[i])) for i in range(out.shape[0])])
+
+        return out
+
+    def reset_hidden(self, batch_size):
+        h = torch.zeros(self.gru_num_layers * 2, batch_size, self.gru_hidden_size)
+        self.gru_h = Variable(h)
+
+
+
+
+
 
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
         self.n_out_classes = 4
-        self.conv = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.conv1 = nn.Conv2d(32, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv = nn.Conv2d(1, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        #self.conv4 = nn.Conv2d(64, 128, kernel_size=3)
+        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+
         self.pool = nn.MaxPool2d(kernel_size=(2, 2))
-        self.hidden = nn.Linear(512, 128)
-        self.drop = nn.Dropout(0.5)
-        self.out1 = nn.Linear(8192, 512)
+        self.drop = nn.Dropout(0.2)
+        self.out1 = nn.Linear(8192, 256)
         self.out2 = nn.Linear(256, self.n_out_classes)
         self.act = nn.ReLU()
-        self.avg_pool = nn.AdaptiveAvgPool2d((None, 512))
+        self.avg_pool = nn.AdaptiveAvgPool2d((None, 256))
         self.num_layers = 2
-        self.batch_size = 4
+        self.batch_size = BATCH_SIZE
         self.hidden_size = 256
-        self.bgru1 = nn.GRU(input_size=512,
+        self.bgru1 = nn.GRU(input_size=256,
                             hidden_size=256,
                             num_layers=2,
                             batch_first=True)
@@ -216,23 +275,34 @@ class Network(nn.Module):
         #print("batch_size, seq_len, _ = ", x.size())
         seq_len = x.size()[-1]
         h0 = torch.rand(self.num_layers, self.batch_size, self.hidden_size).to(device)
-        #print("Initial: ", x.shape)
+        # print("Initial: ", x.shape)
         # [batch_size, channels, height, width]
         x = self.act(self.conv(x))  # [batch_size, 4, feats, seq_len]
+
+        #print("C1: ", x.shape)
+        
         x = self.act(self.conv1(x))  # [batch_size, 8, 28, 28]
+        #print("C2: ", x.shape)
         x = self.act(self.conv2(x))  # [batch_size, 16, 26, 26]
+        #print("C3: ", x.shape)
         x = self.act(self.conv3(x))  # [batch_size, 32, 24, 24]
+
+        # x = self.act(self.conv4(x))  # [batch_size, 32, 24, 24]
+        #print("C4: ", x.shape)
         #x = self.avg_pool(x)  # [batch_size, 32, 12, 12]
         #print("avg_pool: ", x.shape)
         #x = self.drop(x)
         x = x.permute(0, 3, 1, 2)
         # [batch_size, width, channels, height]
+        # print("After permute: ", x.shape)
         T = x.size(1)
         x = x.view(self.batch_size, T, -1)
+        #print("Before first linear: ", x.shape)
         # [batch_size, width (time steps or length), channels * height]
         #x = self.hidden(x)  # [batch_size, 128]
-        
+
         x = self.out1(x)
+        #print("Afer first linear: ", x.shape)
         # x = self.out1(x) # [batch_size, 64]
         x = nn.utils.rnn.pack_padded_sequence(x,
                                               x_lengths,
@@ -244,9 +314,14 @@ class Network(nn.Module):
         x = x.contiguous() 
         x = x.view(-1, x.shape[2])
         
+        #print("Before second linear: ", x.shape)
         x = self.out2(x)  # [batch_size, 2]
+        
+        #print("After second linear: ", x.shape)
         x = F.log_softmax(x, dim=1)
         x = x.view(self.batch_size, seq_len, self.n_out_classes)
+        
+        #print("Output: ", x.shape)
         # x = self.bgru2(x)
         # print(x.shape)
         # x = self.out2(x)  # [batch_size, 2]
@@ -270,11 +345,14 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
         for g in optimizer.param_groups:
             LR=g['lr']
         wav, labels, input_lengths, label_lengths = _data
+
+        input_lengths, label_lengths = torch.IntTensor(input_lengths), torch.IntTensor(label_lengths)
         wav = wav.to(device)
         wav = wav.float()
         labels = labels.to(device)
         optimizer.zero_grad()
         output = model(wav, input_lengths)   #(batch, time, n_class) [4, 911, 3]
+
         output = output.transpose(0,1)
         #print(output.shape, labels.shape, len(input_lengths), len(label_lengths))
         loss = criterion(output, labels, input_lengths, label_lengths)
@@ -292,17 +370,18 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
 
         avg_acc = sum(acc)/len(acc)
         writer.add_scalar("train_accuracy", avg_acc, epoch)
-        writer.add_scalar('train_loss', train_loss, epoch)
+        writer.add_scalar('train_loss', loss, epoch)
         writer.add_scalar('CTCLoss', loss, epoch*len(train_loader)+1)
         writer.add_scalar('TLoss', total_loss, epoch*len(train_loader)+1)
-        writer.add_scalar("Learning Rate", LR, epoch)
+        # writer.add_scalar("Learning Rate", LR, epoch)
         if batch_idx % 100 == 0 or batch_idx == data_len:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                     epoch, batch_idx * len(wav), data_len,
                     100. * batch_idx / len(train_loader), loss.item()))
             print("Train Accuracy: {}, Train loss: {}".format(avg_acc, train_loss))
-    for g in optimizer.param_groups:
-        g['lr'] = g['lr']/LEARNING_ANNEAL
+    
+    # for g in optimizer.param_groups:
+    #   g['lr'] = g['lr']/LEARNING_ANNEAL
             
     #print(decoded_preds[0])
     if (epoch+1)%2 == 0:
@@ -378,8 +457,8 @@ model = Model(input_dim=1025,
 model = Network()
 model = model.to(device)
 criterion = nn.CTCLoss(blank=3, reduction='mean').to(device)
-epochs = 50
-optimizer = optim.Adam(model.parameters(), 1e-3)
+epochs = 5
+optimizer = optim.Adam(model.parameters(), 1e-4)
 
 
 writer = SummaryWriter('train_logs/')
