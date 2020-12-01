@@ -34,9 +34,9 @@ class TextTransform:
     """Maps characters to integers and vice versa"""
     def __init__(self):
         char_map_str = """
-        s 0
-        e 1
-        t 2
+        s 1
+        e 2
+        t 3
         """
         self.char_map = {}
         self.index_map = {}
@@ -94,7 +94,7 @@ def data_processing(data, data_type="train"):
         label_lengths.append(len(label))
 
     spectrograms = nn.utils.rnn.pad_sequence(spectrograms, batch_first=True).unsqueeze(1).transpose(2, 3)
-    labels = nn.utils.rnn.pad_sequence(labels, padding_value = 3.0, batch_first=True)
+    labels = nn.utils.rnn.pad_sequence(labels, padding_value = 1, batch_first=True)
 
     return spectrograms, labels, input_lengths, label_lengths
 
@@ -102,40 +102,53 @@ def data_processing(data, data_type="train"):
 
 BATCH_SIZE = 4
 
-def preprocess_crnn(data, mode='train'):
-    # print(data)
-    inputs = []
-    labels = []
-    if mode == 'train':
-        transform = nn.Sequential(
-            torchaudio.transforms.MelSpectrogram(n_mels=128, sample_rate = 22050, n_fft = 500, win_length=int(22050*0.02), hop_length=int(22050*0.01)),
-            torchaudio.transforms.FrequencyMasking(freq_mask_param=15),
-            torchaudio.transforms.TimeMasking(time_mask_param=35)
-        )
-    else:
-        transform = nn.Sequential(
-            torchaudio.transforms.MelSpectrogram(n_mels=128, sample_rate = 22050, n_fft = 500, win_length=int(22050*0.02), hop_length=int(22050*0.01)),
-        )
-    input_lengths = []
-    label_lengths = []
-    
-    for (wav, sr, trans, lang) in data:
-        #wav, trans  = pad(wav, trans, lang)
-        out = transform(torch.Tensor(wav)).squeeze(0).transpose(0, 1)
-        text_transform = TextTransform()
-        trans = torch.Tensor(text_transform.text_to_int(trans.lower()))
+def wer(r, h):
+    """
+    Calculation of WER with Levenshtein distance.
 
-        inputs.append(out)
-        labels.append(trans)
-        input_lengths.append(out.shape[0])
-        label_lengths.append(len(trans))
-    #inputs = nn.utils.rnn.pad_sequence(inputs, batch_first=True)
-    labels = nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=0)
-    inputs =  nn.utils.rnn.pad_sequence(inputs, batch_first=True).unsqueeze(1).transpose(2, 3)
-    return inputs, labels, input_lengths, label_lengths
+    Works only for iterables up to 254 elements (uint8).
+    O(nm) time ans space complexity.
 
+    Parameters
+    ----------
+    r : list
+    h : list
 
-def GreedyDecoder(output, labels, label_lengths, blank_label=3, collapse_repeated=True):
+    Returns
+    -------
+    int
+
+    Examples
+    --------
+    >>> wer("who is there".split(), "is there".split())
+    1
+    >>> wer("who is there".split(), "".split())
+    3
+    >>> wer("".split(), "who is there".split())
+    3
+    """
+    # initialisation
+
+    d = numpy.zeros((len(r) + 1) * (len(h) + 1), dtype=numpy.uint8)
+    d = d.reshape((len(r) + 1, len(h) + 1))
+    for i in range(len(r) + 1):
+        for j in range(len(h) + 1):
+            if i == 0:
+                d[0][j] = j
+            elif j == 0:
+                d[i][0] = i
+    for i in range(1, len(r) + 1):
+        for j in range(1, len(h) + 1):
+            if r[i - 1] == h[j - 1]:
+                d[i][j] = d[i - 1][j - 1]
+            else:
+                substitution = d[i - 1][j - 1] + 1
+                insertion = d[i][j - 1] + 1
+                deletion = d[i - 1][j] + 1
+                d[i][j] = min(substitution, insertion, deletion)
+    return d[len(r)][len(h)]
+
+def GreedyDecoder(output, labels, label_lengths, blank_label=0, collapse_repeated=True):
     arg_maxes = torch.argmax(output, dim=2)
     decodes = []
     targets = []
@@ -149,6 +162,7 @@ def GreedyDecoder(output, labels, label_lengths, blank_label=3, collapse_repeate
                 decode.append(index.item())
         decodes.append(text_transform.int_to_text(decode))
     return decodes, targets
+
 
 train_dataset = CodeSwitchDataset(lang='Telugu', mode="train")
 validation_split = 0.2
@@ -265,6 +279,7 @@ class Network(nn.Module):
         # print(x.shape)
         # x = self.out2(x)  # [batch_size, 2]
         return x
+
 
 class CNNLayerNorm(nn.Module):
     """Layer normalization built for cnns input"""
@@ -434,6 +449,7 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             }, ckpt_model_path)
         model.to(device).train()
 
@@ -449,6 +465,8 @@ def test(model, device, test_loader, criterion, epoch, writer):
             inputs, labels = inputs.to(device), labels.to(device)
             # output = model(inputs, input_lengths)  # (batch, time, n_class)
             output=model(inputs)
+            output = F.log_softmax(output, dim=2)
+            
             output = output.transpose(0, 1) # (time, batch, n_class)
             loss = criterion(output, labels, input_lengths, label_lengths)
             test_loss += loss.item() / len(test_loader)
@@ -466,6 +484,22 @@ def test(model, device, test_loader, criterion, epoch, writer):
     #print(decoded_targets)
     #print(decoded_preds)
 
+def load_checkpoint(model, optimizer, filename='checkpoint.pth.tar'):
+    # Note: Input model & optimizer should be pre-defined.  This routine only updates their states.
+    start_epoch = 1
+    if os.path.isfile(filename):
+        print("=> loading checkpoint '{}'".format(filename))
+        checkpoint = torch.load(filename)
+        start_epoch = checkpoint['epoch']
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(filename, checkpoint['epoch']))
+    else:
+        print("=> no checkpoint found at '{}'".format(filename))
+
+    return model, optimizer, start_epoch
+
 
 class IterMeter(object):
     """keeps track of total iterations"""
@@ -481,7 +515,7 @@ class IterMeter(object):
 device = 'cuda'
 
 hparams = {
-        "n_cnn_layers": 5,
+        "n_cnn_layers": 4,
         "n_rnn_layers": 5,
         "rnn_dim": 512,
         "n_class": 4,
@@ -489,7 +523,7 @@ hparams = {
         "stride": 2,
         "dropout": 0.1,
         "learning_rate": 5e-4,
-        "batch_size": 2,
+        "batch_size": 4,
         "epochs": 60
     }
 
@@ -504,16 +538,20 @@ model = SpeechRecognitionModel(
 
 
 model = model.to(device)
-criterion = nn.CTCLoss(blank=3, reduction='mean').to(device)
+criterion = nn.CTCLoss(blank=0, reduction='mean').to(device)
 epochs = 60
 
 optimizer = optim.Adam(model.parameters(), hparams['learning_rate'])
 scheduler = optim.lr_scheduler.OneCycleLR(optimizer,
-	max_lr=hparams['learning_rate'],
-	steps_per_epoch=int(len(train_loader)),
-	epochs=hparams['epochs'],
-	anneal_strategy='linear')
+    max_lr=hparams['learning_rate'],
+    steps_per_epoch=int(len(train_loader)),
+    epochs=hparams['epochs'],
+    anneal_strategy='linear')
 
+
+model, optimizer, epoch_num = load_checkpoint(model, optimizer, "checkpoints/ckpt_epoch_50_batch_id_1645.pth")
+
+print(epoch_num)
 writer = SummaryWriter('train_logs/')
 iter_meter = IterMeter()
 
