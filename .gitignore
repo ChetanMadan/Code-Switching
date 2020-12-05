@@ -7,3 +7,7 @@ train_logs/
 checkpoints/
 checkpoints (copy)/
 .idea/
+checkpoints_450/
+train_logs_450_a/
+train_logs_450_b/
+train_logs_900/

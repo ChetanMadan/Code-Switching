@@ -77,6 +77,7 @@ class CodeSwitchDataset(Dataset):
         return len(self.csv_file)
 
     def pad(self, wav, trans, max_len):
+        orig_len = len(wav)
         while len(wav) < max_len:
             diff = max_len - len(wav)
             ext = wav[:diff]
