@@ -475,6 +475,7 @@ def test(model, device, test_loader, criterion, epoch, writer):
 
             avg_acc = sum(acc)/len(acc)
             writer.add_scalar("test_accuracy", avg_acc, epoch)
+            writer.add_scalar("WER", wer(decoded_targets[j], decoded_preds[j]), iter_meter.get())
             writer.add_scalar('test_loss', test_loss, epoch)
             print("Test Accuracy: {}, Test loss: {}".format(avg_acc, test_loss))
         

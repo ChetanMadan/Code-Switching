@@ -10,9 +10,11 @@ Original file is located at
 # Commented out IPython magic to ensure Python compatibility.
 # %load_ext tensorboard
 
+
 import torchaudio
 import torch.optim as optim
-
+import librosa
+import pandas as pd
 import numpy as np
 from difflib import SequenceMatcher
 import os
@@ -476,6 +478,7 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
         labels = labels.to(device)
         optimizer.zero_grad()
         # output = model(wav, input_lengths)   #(batch, time, n_class) [4, 911, 3]
+        print(wav)
         output = model(wav)
 
         output = F.log_softmax(output, dim=2)

@@ -14,6 +14,7 @@ import torchaudio
 import torch.optim as optim
 
 import numpy as np
+from glob import glob
 from difflib import SequenceMatcher
 import os
 from tqdm import tqdm
@@ -23,8 +24,10 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.sampler import SubsetRandomSampler
 import torch
 import torch.nn as nn
+import librosa
 from librosa.core import stft, magphase
 from torch.autograd import Variable
+import pandas as pd
 from data_load import CodeSwitchDataset
 
 import warnings
@@ -71,6 +74,81 @@ train_audio_transforms = nn.Sequential(
         )
 
 
+
+
+
+class CodeSwitchDataset(Dataset):
+    def __init__(self, lang, mode = "train", shuffle=True):
+        self.mode = mode
+        # data path
+        self.lang = lang
+        if self.lang == "Gujarati":
+            self.max_len = 0
+        elif self.lang == "Telugu":
+            self.max_len = 529862
+        elif self.lang == 'Tamil':
+            self.max_len = 0
+        else:
+            raise Exception("Check Language")
+        if self.mode == "train":
+            self.path = 'Data/PartB_{}/Dev/'.format(self.lang)
+        elif self.mode == "test":
+            self.path = self.path = 'Data/PartB_{}/Dev/'.format(self.lang)
+        else:
+            raise Exception("Incorrect mode")
+        self.file_list = os.listdir(os.path.join(self.path, 'Audio'))
+        self.shuffle=shuffle
+        self.csv_file = pd.read_csv(self.path + 'dev.tsv', header=None, sep='\t')
+        self.input_length = []
+        self.label_length = []
+
+    def __len__(self):
+        return len(self.csv_file)
+
+    def pad(self, wav, trans, max_len):
+        orig_len = len(wav)
+        while len(wav) < max_len:
+            diff = max_len - len(wav)
+            ext = wav[:diff]
+            wav = np.append(wav, wav[:diff])
+            ratio = int(len(trans)*diff/len(wav))
+            trans +=trans[:ratio]
+        return wav, trans
+
+    def preprocess(self, wav, sr, trans):
+
+        out = stft(wav, win_length=int(sr*0.02), hop_length=int(sr*0.01))
+        text_transform = TextTransform()
+        trans = torch.Tensor(text_transform.text_to_int(trans.lower()))
+
+        out = magphase(out)[0]
+        out = [np.log(1 + x) for x in out]
+        return np.array(out), trans
+
+    def __getitem__(self, idx):
+        file_name = self.csv_file[0][idx]
+        trans = self.csv_file[1][idx]
+        wav, sr = librosa.load(glob(self.path + 'Audio/*'+ str(file_name) + '.wav')[0])
+
+        if len(set(trans)) > 2:
+            label = 1
+        elif len(set(trans)) == 1 or len(set(trans)) == 2:
+            label = 0
+        else:
+            raise Exception("Check transcript")
+        if self.mode =="train":
+            return wav, sr, trans, self.lang
+        elif self.mode == "test":
+            return wav
+        else:
+            raise Exception("Incorrect Mode")
+
+
+
+
+
+
+
 valid_audio_transforms = torchaudio.transforms.MelSpectrogram()
 
 text_transform = TextTransform()
@@ -102,7 +180,50 @@ def data_processing(data, data_type="train"):
 
 BATCH_SIZE = 4
 
+def wer(r, h):
+    """
+    Calculation of WER with Levenshtein distance.
 
+    Works only for iterables up to 254 elements (uint8).
+    O(nm) time ans space complexity.
+
+    Parameters
+    ----------
+    r : list
+    h : list
+
+    Returns
+    -------
+    int
+
+    Examples
+    --------
+    >>> wer("who is there".split(), "is there".split())
+    1
+    >>> wer("who is there".split(), "".split())
+    3
+    >>> wer("".split(), "who is there".split())
+    3
+    """
+    # initialisation
+    d = np.zeros((len(r) + 1) * (len(h) + 1), dtype=np.uint8)
+    d = d.reshape((len(r) + 1, len(h) + 1))
+    for i in range(len(r) + 1):
+        for j in range(len(h) + 1):
+            if i == 0:
+                d[0][j] = j
+            elif j == 0:
+                d[i][0] = i
+    for i in range(1, len(r) + 1):
+        for j in range(1, len(h) + 1):
+            if r[i - 1] == h[j - 1]:
+                d[i][j] = d[i - 1][j - 1]
+            else:
+                substitution = d[i - 1][j - 1] + 1
+                insertion = d[i][j - 1] + 1
+                deletion = d[i - 1][j] + 1
+                d[i][j] = min(substitution, insertion, deletion)
+    return d[len(r)][len(h)]/len(r)
 
 def GreedyDecoder(output, labels, label_lengths, blank_label=0, collapse_repeated=True):
     arg_maxes = torch.argmax(output, dim=2)
@@ -148,7 +269,7 @@ test_loader = DataLoader(train_dataset,
                           drop_last=True,
                           num_workers=6,
                           sampler=valid_sampler,
-                         collate_fn=lambda x: data_processing(x, 'valid'))
+                          collate_fn=lambda x: data_processing(x, 'valid'))
 
 
 device = torch.device('cuda')
@@ -236,12 +357,12 @@ class Network(nn.Module):
         # x = self.out2(x)  # [batch_size, 2]
         return x
 
+
 class CNNLayerNorm(nn.Module):
     """Layer normalization built for cnns input"""
     def __init__(self, n_feats):
         super(CNNLayerNorm, self).__init__()
         self.layer_norm = nn.LayerNorm(n_feats)
-
     def forward(self, x):
         # x (batch, channel, feature, time)
         x = x.transpose(2, 3).contiguous() # (batch, channel, time, feature)
@@ -255,14 +376,12 @@ class ResidualCNN(nn.Module):
     """
     def __init__(self, in_channels, out_channels, kernel, stride, dropout, n_feats):
         super(ResidualCNN, self).__init__()
-
         self.cnn1 = nn.Conv2d(in_channels, out_channels, kernel, stride, padding=kernel//2)
         self.cnn2 = nn.Conv2d(out_channels, out_channels, kernel, stride, padding=kernel//2)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.layer_norm1 = CNNLayerNorm(n_feats)
         self.layer_norm2 = CNNLayerNorm(n_feats)
-
     def forward(self, x):
         residual = x  # (batch, channel, feature, time)
         x = self.layer_norm1(x)
@@ -278,16 +397,13 @@ class ResidualCNN(nn.Module):
 
 
 class BidirectionalGRU(nn.Module):
-
     def __init__(self, rnn_dim, hidden_size, dropout, batch_first):
         super(BidirectionalGRU, self).__init__()
-
         self.BiGRU = nn.GRU(
             input_size=rnn_dim, hidden_size=hidden_size,
             num_layers=1, batch_first=batch_first, bidirectional=True)
         self.layer_norm = nn.LayerNorm(rnn_dim)
         self.dropout = nn.Dropout(dropout)
-
     def forward(self, x):
         x = self.layer_norm(x)
         x = F.gelu(x)
@@ -298,15 +414,12 @@ class BidirectionalGRU(nn.Module):
 
 class SpeechRecognitionModel(nn.Module):
     """Speech Recognition Model Inspired by DeepSpeech 2"""
-
     def __init__(self, n_cnn_layers, n_rnn_layers, rnn_dim, n_class, n_feats, stride=2, dropout=0.1):
         super(SpeechRecognitionModel, self).__init__()
         n_feats = n_feats//2
         self.cnn = nn.Conv2d(1, 64, 3, stride=stride, padding=3//2)  # cnn for extracting heirachal features
-
         # n residual cnn layers with filter size of 32
         self.rescnn_layers = nn.Sequential(*[
-
             ResidualCNN(64, 64, kernel=3, stride=1, dropout=dropout, n_feats=n_feats) 
             for _ in range(n_cnn_layers)
         ])
@@ -322,7 +435,6 @@ class SpeechRecognitionModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(rnn_dim, n_class)
         )
-
     def forward(self, x):
         x = self.cnn(x)
         x = self.rescnn_layers(x)
@@ -356,6 +468,7 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
         labels = labels.to(device)
         optimizer.zero_grad()
         # output = model(wav, input_lengths)   #(batch, time, n_class) [4, 911, 3]
+        print(wav.shape)
         output = model(wav)
 
         output = F.log_softmax(output, dim=2)
@@ -373,6 +486,7 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
 
         iter_meter.step()
         decoded_preds, decoded_targets = GreedyDecoder(output.transpose(0, 1), labels, label_lengths)
+        print("LABELS: ", labels, label_lengths)
         decoded_preds, decoded_targets = list(map(str.strip, decoded_preds)), list(map(str.strip, decoded_targets))
         print(decoded_preds, decoded_targets)
         print("preds: ", "".join(decoded_preds))
@@ -394,7 +508,6 @@ def train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, 
     
     # for g in optimizer.param_groups:
     #   g['lr'] = g['lr']/LEARNING_ANNEAL
-            
     #print(decoded_preds[0])
     if (epoch+1)%2 == 0:
         model.eval().cpu()
@@ -421,8 +534,8 @@ def test(model, device, test_loader, criterion, epoch, writer):
             # output = model(inputs, input_lengths)  # (batch, time, n_class)
             output=model(inputs)
             output = F.log_softmax(output, dim=2)
-            
             output = output.transpose(0, 1) # (time, batch, n_class)
+
             loss = criterion(output, labels, input_lengths, label_lengths)
             test_loss += loss.item() / len(test_loader)
             decoded_preds, decoded_targets = GreedyDecoder(output.transpose(0, 1), labels, label_lengths)
@@ -434,6 +547,7 @@ def test(model, device, test_loader, criterion, epoch, writer):
             avg_acc = sum(acc)/len(acc)
             writer.add_scalar("test_accuracy", avg_acc, epoch)
             writer.add_scalar('test_loss', test_loss, epoch)
+            writer.add_scalar("WER", wer(decoded_targets[j], decoded_preds[j]), iter_meter.get())
             print("Test Accuracy: {}, Test loss: {}".format(avg_acc, test_loss))
         
     #print(decoded_targets)
@@ -478,7 +592,7 @@ hparams = {
         "stride": 2,
         "dropout": 0.1,
         "learning_rate": 5e-4,
-        "batch_size": 2,
+        "batch_size": 4,
         "epochs": 60
     }
 
@@ -498,16 +612,58 @@ epochs = 60
 
 optimizer = optim.Adam(model.parameters(), hparams['learning_rate'])
 scheduler = optim.lr_scheduler.OneCycleLR(optimizer,
-	max_lr=hparams['learning_rate'],
-	steps_per_epoch=int(len(train_loader)),
-	epochs=hparams['epochs'],
-	anneal_strategy='linear')
+    max_lr=hparams['learning_rate'],
+    steps_per_epoch=int(len(train_loader)),
+    epochs=hparams['epochs'],
+    anneal_strategy='linear')
 
 
-model, optimizer, epoch_num = load_checkpoint(model, optimizer, "checkpoints/ckpt_epoch_50_batch_id_1645.pth")
 
-print(epoch_num)
-writer = SummaryWriter('train_logs/')
+
+def test_logs(model, device, test_loader, criterion, epoch, optimizer, iter_meter):
+    model.eval()
+    training_loss, train_acc = 0, 0
+    eer, total_eer = 0, 0
+    test_loss=0
+    acc = []
+    ps = ['final_epoch_61.model', 'final_epoch_client161.model', 'final_epoch_client261.model']
+    for p in ps:
+        model, optimizer, epoch_num = load_checkpoint(model, optimizer, "checkpoints/{}".format(p))
+        writer = SummaryWriter('testing_logs_2/{}'.format(p))
+        with torch.no_grad():
+            for batch_idx, _data in enumerate(test_loader):
+                inputs, labels, input_lengths, label_lengths = _data 
+                inputs, labels = inputs.to(device), labels.to(device)
+                # output = model(inputs, input_lengths)  # (batch, time, n_class)
+                print(inputs.shape)
+                output=model(inputs)
+                output = F.log_softmax(output, dim=2)
+                output = output.transpose(0, 1) # (time, batch, n_class)
+
+                loss = criterion(output, labels, input_lengths, label_lengths)
+                test_loss += loss.item() / len(test_loader)
+                decoded_preds, decoded_targets = GreedyDecoder(output.transpose(0, 1), labels, label_lengths)
+                decoded_preds, decoded_targets = list(map(str.strip, decoded_preds)), list(map(str.strip, decoded_targets))
+                for j in range(len(decoded_preds)):
+                    s = SequenceMatcher(None, decoded_targets[j], decoded_preds[j])
+                    acc.append(s.ratio())
+
+                avg_acc = sum(acc)/len(acc)
+                writer.add_scalar("test_accuracy", avg_acc, iter_meter.get())
+                writer.add_scalar('test_loss', test_loss, iter_meter.get())
+                writer.add_scalar("WERs/", wer(decoded_targets[j], decoded_preds[j]), iter_meter.get())
+                print("Test Accuracy: {}, Test loss: {}".format(avg_acc, test_loss))
+                iter_meter.step()
+            
+
+
+
+
+
+# model, optimizer, epoch_num = load_checkpoint(model, optimizer, "checkpoints/final_epoch_61.model")
+
+# print(epoch_num)
+writer = SummaryWriter('testing_logs_2/')
 iter_meter = IterMeter()
 
 
@@ -519,22 +675,8 @@ iter_meter = IterMeter()
 model.to(device)
 model.train()
 
-for epoch in range(1, epochs+1):
-    #train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, writer, scheduler)
-    test(model, device, test_loader, criterion, epoch, writer)
+for epoch in range(1, 10):
+    train(model, device, train_loader, criterion, optimizer, epoch, iter_meter, writer, scheduler)
+    test_logs(model, device, test_loader, criterion, epoch, optimizer, iter_meter)
 
 model.eval().cpu()
-save_model_filename = "final_epoch_" + str(epoch + 1)  + ".model"
-save_model_path = os.path.join("checkpoints", save_model_filename)
-torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            }, save_model_path)
-
-print("\nDone, trained model saved at", save_model_path)
-
-
-
-
-

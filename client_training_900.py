@@ -509,7 +509,6 @@ class IterMeter(object):
     def get(self):
         return self.val
 
-device = 'cuda'
 
 hparams = {
         "n_cnn_layers": 4,
@@ -575,8 +574,3 @@ torch.save({
             }, save_model_path)
 
 print("\nDone, trained model saved at", save_model_path)
-
-
-
-
-
