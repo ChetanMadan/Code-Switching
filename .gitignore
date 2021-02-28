@@ -11,4 +11,5 @@ checkpoints_450/
 train_logs_450_a/
 train_logs_450_b/
 train_logs_900/
-fed_averaging/
+fed_averaging_ckpt/
+fed_avg_logs/
