@@ -535,7 +535,6 @@ model = SpeechRecognitionModel(
         ).to(device)
 
 
-model = model.to(device)
 criterion = nn.CTCLoss(blank=0, reduction='mean').to(device)
 epochs = 60
 
@@ -559,7 +558,6 @@ iter_meter = IterMeter()
 # %load_ext tensorboard
 # %tensorboard --logdir=train_logs
 
-model.to(device)
 model.train()
 
 for epoch in range(1, epochs+1):
