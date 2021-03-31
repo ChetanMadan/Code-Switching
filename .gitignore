@@ -14,3 +14,7 @@ train_logs_900/
 fed_averaging_ckpt/
 fed_avg_logs/
 checkpoints_avg/
+Gujarati_Checkpoints/
+Tamil_Checkpoints/
+Telugu_Checkpoints/
+fed_averaging_ckpt/
